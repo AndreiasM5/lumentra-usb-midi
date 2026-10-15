@@ -4,6 +4,12 @@
 
 Lumentra uses the RP2350's native USB interface to send MIDI to a DAW such as FL Studio. A VL53L0X distance sensor turns hand movement into MIDI CC messages, while an ST7735 display and buzzer provide local feedback.
 
+<p align="center">
+  <img src="docs/media/lumentra-controller.jpg" alt="Lumentra hardware with four green buttons in a red enclosure, a Pico board, display, and breadboard wiring" width="600">
+</p>
+
+*Physical prototype with its four-button enclosure and connected electronics.*
+
 ## Architecture
 
 ```mermaid
