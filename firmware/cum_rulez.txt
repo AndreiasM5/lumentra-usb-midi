@@ -1,0 +1,639 @@
+LUMENTRA - CUM RULEZ, BUILD SI INCARC PE RASPBERRY PI PICO 2 W
+==============================================================
+
+Acest fisier explica pas cu pas cum pregatesti un PC gol ca sa poti compila
+firmware-ul Rust si sa il incarci pe Raspberry Pi Pico 2 W.
+
+Ghidul este scris pentru Windows, deoarece proiectul a fost lucrat in PowerShell.
+
+
+1. Ce trebuie sa obtii la final
+-------------------------------
+
+La final vrei sa ai un fisier:
+
+lumentra-rp2350.uf2
+
+Acesta este firmware-ul gata de copiat pe Pico 2 W.
+
+Dupa copiere:
+- placa se restarteaza;
+- nu mai apare ca drive RP2350;
+- Windows o vede ca dispozitiv MIDI;
+- FL Studio o afiseaza la MIDI Input ca "Lumentra USB MIDI".
+
+
+2. Ce trebuie instalat pe un PC gol
+-----------------------------------
+
+Ai nevoie de:
+
+1. Git
+2. Rust toolchain prin rustup
+3. Target-ul Rust pentru RP2350 ARM
+4. elf2uf2-rs
+5. PowerShell
+6. Optional: Visual Studio Code
+
+PowerShell vine deja cu Windows.
+
+
+3. Instalare Git
+----------------
+
+Git este util pentru descarcarea proiectului si pentru lucru cu repository-ul.
+
+Instalare:
+
+1. Intra pe:
+   https://git-scm.com/download/win
+
+2. Descarca Git for Windows.
+
+3. Instaleaza cu optiunile default.
+
+4. Dupa instalare, deschide PowerShell si verifica:
+
+git --version
+
+Daca apare ceva de genul:
+
+git version 2.xx.x.windows.x
+
+inseamna ca Git este instalat.
+
+
+4. Instalare Rust
+-----------------
+
+Rust se instaleaza prin rustup.
+
+1. Intra pe:
+   https://rustup.rs/
+
+2. Descarca rustup-init.exe.
+
+3. Ruleaza installerul.
+
+4. Alege instalarea default.
+
+5. Inchide si redeschide PowerShell.
+
+6. Verifica:
+
+rustc --version
+cargo --version
+rustup --version
+
+Daca toate afiseaza versiuni, Rust este instalat corect.
+
+
+5. Instalarea target-ului pentru Pico 2 W / RP2350
+--------------------------------------------------
+
+Pico 2 W foloseste RP2350. In acest proiect compilam pentru ARM Cortex-M33.
+
+Ruleaza:
+
+rustup target add thumbv8m.main-none-eabihf
+
+Verifica target-urile instalate:
+
+rustup target list --installed
+
+Ar trebui sa vezi:
+
+thumbv8m.main-none-eabihf
+
+
+6. Instalarea elf2uf2-rs
+------------------------
+
+Cargo produce un fisier ELF, dar Pico in bootloader asteapta un fisier UF2.
+De aceea folosim elf2uf2-rs.
+
+Instalare:
+
+cargo install elf2uf2-rs
+
+Verificare:
+
+elf2uf2-rs --help
+
+Daca afiseaza help-ul, este instalat.
+
+
+7. Deschiderea proiectului
+--------------------------
+
+Proiectul Rust este in folderul:
+
+d:\tudor\cod_rust
+
+In PowerShell:
+
+cd d:\tudor\cod_rust
+
+Verifica fisierele:
+
+dir
+
+Ar trebui sa vezi:
+- Cargo.toml
+- Cargo.lock
+- build.rs
+- memory.x
+- link-rp2350.x
+- src
+- scripts
+- README.md
+- cod_explicat.txt
+- cum_rulez.txt
+
+
+8. Structura proiectului
+------------------------
+
+Cele mai importante fisiere:
+
+Cargo.toml
+- lista dependintelor Rust;
+- setari de build debug/release.
+
+.cargo/config.toml
+- spune lui Cargo ce target embedded folosim;
+- adauga scripturile de linker.
+
+build.rs
+- copiaza memory.x si link-rp2350.x in folderul de build;
+- le face vizibile pentru linker.
+
+memory.x
+- defineste memoria FLASH si RAM a RP2350.
+
+link-rp2350.x
+- pozitioneaza corect start block-ul RP2350.
+- fara asta, Pico 2 W poate ramane in bootloader.
+
+src/main.rs
+- codul firmware propriu-zis.
+
+scripts/make-uf2.ps1
+- compileaza proiectul;
+- genereaza lumentra.uf2;
+- patch-uieste UF2-ul cu family ID corect pentru RP2350;
+- produce lumentra-rp2350.uf2.
+
+
+9. Build simplu, fara UF2
+-------------------------
+
+Pentru a verifica daca proiectul compileaza:
+
+cargo check
+
+Acest lucru este rapid si verifica erorile de cod.
+
+Pentru build release:
+
+cargo build --release
+
+Fisierul ELF rezultat se afla la:
+
+target\thumbv8m.main-none-eabihf\release\lumentra
+
+Acesta NU se copiaza direct pe Pico. Trebuie convertit in UF2.
+
+
+10. Build complet cu UF2
+------------------------
+
+Cel mai simplu este sa rulezi scriptul:
+
+.\scripts\make-uf2.ps1
+
+Acest script face automat:
+
+1. cargo build --release
+2. elf2uf2-rs target\thumbv8m.main-none-eabihf\release\lumentra lumentra.uf2
+3. modifica family ID-ul UF2 pentru RP2350
+4. scrie fisierul final lumentra-rp2350.uf2
+
+Daca totul merge bine, la final vezi:
+
+Created lumentra-rp2350.uf2
+
+
+11. De ce exista lumentra.uf2 si lumentra-rp2350.uf2
+----------------------------------------------------
+
+elf2uf2-rs genereaza implicit un UF2 care poate fi interpretat ca RP2040.
+Pico 2 W are RP2350 si are nevoie de family ID corect.
+
+Scriptul make-uf2.ps1 modifica UF2-ul si pune family ID:
+
+0xE48BFF59
+
+Acesta este family ID-ul pentru RP2350 ARM secure.
+
+Fisierul de incarcat este:
+
+lumentra-rp2350.uf2
+
+Nu folosi lumentra.uf2 simplu.
+
+
+12. Cum pui Pico 2 W in bootloader
+----------------------------------
+
+Pentru a incarca firmware:
+
+1. Scoate Pico 2 W din USB.
+2. Tine apasat butonul BOOTSEL de pe placa.
+3. In timp ce tii BOOTSEL, conecteaza cablul USB la PC.
+4. Dupa ce apare un drive nou, poti elibera BOOTSEL.
+
+Drive-ul apare de obicei ca:
+
+RP2350
+
+Pe Windows poate fi E:, F: sau alta litera.
+
+In drive vei vedea fisiere ca:
+
+INDEX.HTM
+INFO_UF2.TXT
+
+Este normal. Asta inseamna ca placa este in bootloader.
+
+
+13. Cum incarci firmware-ul manual
+----------------------------------
+
+Dupa ce ai generat:
+
+lumentra-rp2350.uf2
+
+si placa este in bootloader:
+
+1. Deschide File Explorer.
+2. Intra in folderul:
+   d:\tudor\cod_rust
+3. Copiaza:
+   lumentra-rp2350.uf2
+4. Lipeste-l in drive-ul RP2350.
+
+Dupa copiere:
+- drive-ul dispare;
+- placa se restarteaza;
+- firmware-ul ruleaza.
+
+Daca drive-ul nu dispare, inseamna ca UF2-ul nu a fost acceptat.
+In cazul acestui proiect, trebuie verificat ca ai copiat lumentra-rp2350.uf2,
+nu lumentra.uf2.
+
+
+14. Cum incarci firmware-ul din PowerShell
+------------------------------------------
+
+Daca placa apare ca E:, poti face:
+
+Copy-Item .\lumentra-rp2350.uf2 E:\
+
+Exemplu complet:
+
+cd d:\tudor\cod_rust
+.\scripts\make-uf2.ps1
+Copy-Item .\lumentra-rp2350.uf2 E:\
+
+Dupa cateva secunde, drive-ul E: dispare.
+
+Atentie: litera poate sa nu fie E:. Verifica in File Explorer.
+
+
+15. Cum verifici ca Windows vede device-ul MIDI
+-----------------------------------------------
+
+Dupa flash, Pico nu mai apare ca drive RP2350.
+
+In Windows poti verifica din Device Manager sau PowerShell.
+
+PowerShell:
+
+Get-PnpDevice -PresentOnly | Where-Object {
+    $_.FriendlyName -match 'Lumentra|MIDI|USB Audio'
+}
+
+Sau poti verifica direct in FL Studio:
+
+1. Deschide FL Studio.
+2. Options -> MIDI Settings.
+3. La Input ar trebui sa apara:
+   Lumentra USB MIDI
+4. Selecteaza-l.
+5. Bifeaza Enable.
+
+
+16. Configurare in FL Studio
+----------------------------
+
+1. Conecteaza Pico 2 W cu firmware-ul incarcat.
+2. Deschide FL Studio.
+3. Mergi la:
+
+Options -> MIDI Settings
+
+4. La Input cauta:
+
+Lumentra USB MIDI
+
+5. Selecteaza-l.
+6. Apasa/bifeaza:
+
+Enable
+
+7. Controller type poate ramane generic/empty.
+
+
+17. Testarea butoanelor in FL Studio
+------------------------------------
+
+Butoanele trimit note MIDI:
+
+GP10 -> 36
+GP11 -> 38
+GP12 -> 42
+GP13 -> 46
+
+In FL Studio poti testa cu:
+- FPC;
+- un sampler;
+- MIDI Out;
+- orice synth.
+
+Exemplu cu FPC:
+
+1. Adauga FPC in Channel Rack.
+2. Activeaza Lumentra USB MIDI la MIDI Input.
+3. Apasa butoanele.
+4. Daca notele sunt mapate pe pad-uri, se aud sunete.
+
+In FL Studio octavele pot fi afisate diferit. De exemplu nota 36 poate aparea
+ca C3 in FL, desi in alte programe este C1. Numarul MIDI este cel important.
+
+
+18. Testarea senzorului ToF in FL Studio
+----------------------------------------
+
+Senzorul trimite MIDI Control Change:
+
+CC 74
+
+Pentru a-l lega de un knob:
+
+1. Deschide un plugin sau un efect.
+2. Alege un knob, de exemplu cutoff, volume, reverb mix.
+3. Click dreapta pe knob.
+4. Alege:
+
+Link to controller
+
+5. Misca mana deasupra senzorului ToF.
+6. FL Studio ar trebui sa detecteze automat CC 74.
+7. Apasa Accept, daca este cazul.
+
+Acum miscarea mainii controleaza acel parametru.
+
+
+19. Ce trebuie sa vezi pe LCD
+-----------------------------
+
+LCD-ul arata:
+
+1. Sliderul ToF:
+   - bara verde;
+   - se schimba cand misti mana la senzor.
+
+2. Cele 4 butoane:
+   - dreptunghiuri pentru fiecare buton;
+   - cand apesi un buton, dreptunghiul devine full color.
+
+Daca LCD-ul are pureci/pixeli random:
+- verifica firele SPI;
+- verifica alimentarea 3.3V;
+- verifica GND comun;
+- verifica offset-urile LCD_COL_OFFSET si LCD_ROW_OFFSET in main.rs.
+
+In versiunea curenta:
+
+LCD_COL_OFFSET = 4
+LCD_ROW_OFFSET = 3
+
+
+20. Probleme frecvente si rezolvari
+-----------------------------------
+
+Problema: Pico apare ca drive RP2350 si ramane asa.
+
+Cauze posibile:
+- esti in bootloader si nu ai copiat firmware-ul;
+- ai copiat fisierul gresit;
+- UF2-ul nu este pentru RP2350.
+
+Rezolvare:
+- copiaza lumentra-rp2350.uf2, nu lumentra.uf2.
+
+
+Problema: FL Studio nu vede Lumentra USB MIDI.
+
+Rezolvare:
+1. Verifica daca placa nu este inca in bootloader.
+2. Scoate si reconecteaza placa fara BOOTSEL.
+3. In FL Studio apasa Refresh device list.
+4. Verifica in Device Manager daca apare un device MIDI/USB Audio.
+
+
+Problema: Butoanele nu trimit nimic.
+
+Verifica:
+- fiecare buton are un picior la GPIO si unul la GND;
+- codul foloseste Pull::Up;
+- apasat inseamna LOW;
+- GND-ul butoanelor este acelasi GND cu placa Pico.
+
+
+Problema: un buton nu merge.
+
+Verifica:
+- firul de semnal;
+- firul de GND;
+- butonul fizic;
+- pinul folosit.
+
+Pentru proiect:
+- GP10, GP11, GP12, GP13.
+
+
+Problema: Senzorul ToF nu controleaza nimic.
+
+Verifica:
+- VIN la 3.3V;
+- GND la GND;
+- SDA la GP4;
+- SCL la GP5;
+- XSHUT la GP6;
+- in FL Studio ai facut Link to controller pe un knob.
+
+Codul continua sa functioneze si daca senzorul nu raspunde, deci butoanele pot
+merge chiar daca ToF-ul nu merge.
+
+
+Problema: Ecranul nu arata nimic.
+
+Verifica:
+- VCC la 3.3V;
+- GND la GND;
+- SCL la GP18;
+- SDA/MOSI la GP19;
+- RES la GP20;
+- DC la GP16;
+- CS la GND;
+- BLK la 3.3V.
+
+
+Problema: Ecranul are culori ciudate sau imagine mutata.
+
+Poate fi de la:
+- modul ST7735 diferit;
+- offset-uri diferite;
+- rotatie diferita.
+
+In cod, cauta:
+
+LCD_COL_OFFSET
+LCD_ROW_OFFSET
+
+si comanda:
+
+self.command_with_data(0x36, &[0xA8]);
+
+0x36 controleaza orientarea memoriei display-ului.
+
+
+21. Comenzi utile
+-----------------
+
+Din folderul proiectului:
+
+cd d:\tudor\cod_rust
+
+Verificare cod:
+
+cargo check
+
+Build release:
+
+cargo build --release
+
+Generare UF2:
+
+.\scripts\make-uf2.ps1
+
+Copiere pe placa, daca placa este E:
+
+Copy-Item .\lumentra-rp2350.uf2 E:\
+
+
+22. Cum faci o modificare si incarci din nou
+--------------------------------------------
+
+Exemplu:
+
+1. Modifici src/main.rs.
+2. Salvezi fisierul.
+3. In PowerShell:
+
+cd d:\tudor\cod_rust
+cargo check
+.\scripts\make-uf2.ps1
+
+4. Pui Pico in BOOTSEL.
+5. Copiezi:
+
+lumentra-rp2350.uf2
+
+pe drive-ul RP2350.
+
+
+23. Ce NU trebuie modificat fara motiv
+--------------------------------------
+
+Pentru un incepator, este bine sa nu modifice:
+
+- memory.x
+- link-rp2350.x
+- build.rs
+- .cargo/config.toml
+- scriptul de patch UF2, daca nu stie ce face
+
+Aceste fisiere sunt importante ca firmware-ul sa booteze corect pe RP2350.
+
+Modificarile mai sigure sunt in:
+
+src/main.rs
+
+De exemplu:
+- note MIDI;
+- culori LCD;
+- pozitionare UI;
+- CC number;
+- interval distanta senzor.
+
+
+24. Ce se poate prezenta la proiect
+-----------------------------------
+
+Pentru prezentare, poti spune:
+
+1. Am construit un controller USB-MIDI cu Raspberry Pi Pico 2 W.
+2. Firmware-ul este scris in Rust no_std.
+3. Folosesc Embassy pentru runtime async si acces la periferice.
+4. Butoanele sunt citite prin GPIO cu Pull::Up.
+5. Senzorul VL53L0X este citit prin I2C.
+6. LCD-ul ST7735 este controlat prin SPI.
+7. USB-ul nativ al RP2350 expune placa drept MIDI device.
+8. In FL Studio, butoanele declanseaza note, iar senzorul controleaza un parametru prin CC 74.
+9. Display-ul arata feedback live pentru butoane si senzor.
+10. Buzzerul ofera feedback audio local.
+
+
+25. Recapitulare rapida pentru un PC gol
+----------------------------------------
+
+Instalare:
+
+1. Instaleaza Git.
+2. Instaleaza Rust de pe rustup.rs.
+3. Ruleaza:
+
+rustup target add thumbv8m.main-none-eabihf
+cargo install elf2uf2-rs
+
+Build:
+
+cd d:\tudor\cod_rust
+.\scripts\make-uf2.ps1
+
+Flash:
+
+1. Tine BOOTSEL apsat pe pico
+2. Conecteaza Pico.
+3. Copiaza lumentra-rp2350.uf2 pe drive-ul RP2350.
+4. Asteapta restart.
+
+Test:
+
+1. Deschide FL Studio.
+2. Options -> MIDI Settings.
+3. Enable la Lumentra USB MIDI.
+4. Apasa butoanele si misca mana la senzor.

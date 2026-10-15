@@ -1,0 +1,1016 @@
+LUMENTRA - EXPLICATIE COD RUST PAS CU PAS
+=========================================
+
+Acest fisier explica firmware-ul din src/main.rs pentru proiectul Lumentra.
+Este scris pentru cineva care primeste proiectul de la zero si vrea sa inteleaga
+ce face codul, ce rol are fiecare parte si cum se leaga totul de hardware.
+
+
+1. Ce este proiectul Lumentra
+----------------------------
+
+Lumentra este un controller USB-MIDI facut cu Raspberry Pi Pico 2 W.
+
+Pe scurt:
+- placa Pico 2 W se conecteaza la PC prin USB;
+- PC-ul o vede ca dispozitiv MIDI numit "Lumentra USB MIDI";
+- cele 4 butoane trimit note MIDI;
+- senzorul VL53L0X masoara distanta mainii si trimite o valoare MIDI CC;
+- buzzerul face bip la apasari;
+- ecranul ST7735 arata starea butoanelor si valoarea senzorului.
+
+In FL Studio, proiectul poate fi folosit ca un mic MIDI controller:
+- butoanele pot declansa kick, snare, hi-hat, clap etc.;
+- senzorul ToF poate controla cutoff, volum, reverb, delay sau orice knob mapabil.
+
+
+2. Ce inseamna #![no_std] si #![no_main]
+----------------------------------------
+
+La inceputul fisierului exista:
+
+#![no_std]
+#![no_main]
+
+Intr-un program normal Rust pe PC, folosim biblioteca standard std si functia
+clasica main(). Pe microcontroller nu avem sistem de operare, fisiere, terminal,
+thread-uri normale sau alocare dinamica obisnuita.
+
+#![no_std] inseamna:
+- nu folosim biblioteca standard Rust;
+- folosim doar core si biblioteci embedded compatibile.
+
+#![no_main] inseamna:
+- nu folosim functia main clasica a unui program de PC;
+- functia de pornire este furnizata de runtime-ul embedded si de Embassy.
+
+
+3. Bibliotecile importate
+-------------------------
+
+Codul importa mai multe module:
+
+embassy_executor::Spawner
+- permite pornirea task-urilor async.
+- in cod este folosit pentru a porni task-ul USB.
+
+embassy_rp
+- este HAL-ul pentru placi Raspberry Pi Pico / RP2040 / RP2350.
+- HAL inseamna Hardware Abstraction Layer.
+- pe scurt, permite folosirea pinilor GPIO, USB, SPI, I2C etc. din Rust.
+
+embassy_rp::gpio::{Input, Level, Output, Pull}
+- Input: pin citit ca intrare, folosit pentru butoane.
+- Output: pin controlat ca iesire, folosit pentru buzzer si semnale LCD.
+- Pull: permite activarea rezistentelor interne pull-up/pull-down.
+- Level: nivel logic initial HIGH/LOW pentru iesiri.
+
+embassy_rp::i2c
+- configurarea magistralei I2C pentru senzorul VL53L0X.
+
+embassy_rp::spi
+- configurarea magistralei SPI pentru LCD-ul ST7735.
+
+embassy_rp::usb
+- driverul USB hardware al Pico 2 W.
+
+embassy_time::{Duration, Timer}
+- permite asteptari non-blocante in stil async.
+- de exemplu: Timer::after(Duration::from_millis(50)).await.
+
+embassy_usb::class::midi
+- implementeaza clasa USB-MIDI.
+- asta face ca Windows si FL Studio sa vada placa drept controller MIDI.
+
+static_cell::StaticCell
+- folosit pentru buffere statice necesare stack-ului USB.
+- in embedded nu este bine sa alocam memorie dinamic la intamplare.
+
+vl53l0x::VL53L0x
+- driver pentru senzorul Time-of-Flight VL53L0X.
+
+panic_halt
+- daca apare o eroare grava/panic, microcontrollerul se opreste.
+
+
+4. Constantele principale
+------------------------
+
+In cod exista:
+
+const MIDI_CHANNEL: u8 = 0;
+
+Canalul MIDI folosit intern. In MIDI, canalele sunt codate de la 0 la 15,
+dar in programe muzicale sunt afisate de obicei ca 1-16. Deci 0 inseamna
+canalul MIDI 1.
+
+
+const CC_DISTANCE: u8 = 74;
+
+Numarul de Control Change trimis de senzorul ToF. CC 74 este folosit des
+pentru brightness/filter cutoff, deci e potrivit pentru controlul unui filtru
+in FL Studio.
+
+
+const BUTTON_NOTES: [u8; 4] = [36, 38, 42, 46];
+
+Notele MIDI trimise de cele 4 butoane:
+- buton 1: nota 36
+- buton 2: nota 38
+- buton 3: nota 42
+- buton 4: nota 46
+
+In FL Studio, denumirea octavei poate aparea diferit, de exemplu C3 in loc de C1.
+Important este numarul MIDI.
+
+
+const BUTTON_VELOCITY: u8 = 110;
+
+Velocity inseamna cat de tare este apasata nota MIDI. Butoanele sunt digitale,
+nu masoara forta, asa ca trimitem o valoare fixa: 110.
+
+
+const DISTANCE_MIN_MM: u16 = 40;
+const DISTANCE_MAX_MM: u16 = 450;
+
+Intervalul de distanta folosit pentru senzorul VL53L0X.
+- la 40 mm sau mai aproape, valoarea MIDI este maxima;
+- la 450 mm sau mai departe, valoarea MIDI este minima.
+
+
+const LCD_COL_OFFSET: u8 = 4;
+const LCD_ROW_OFFSET: u8 = 3;
+
+Aceste doua valori calibreaza memoria interna a ecranului ST7735.
+Multe display-uri ST7735 vandute ca 128x128 au de fapt o zona interna mai mare
+si imaginea trebuie decalata putin. Fara aceste offset-uri apar pureci,
+benzi colorate sau pixeli random pe margini.
+Din teste, el este aproape 132 de fapt.
+
+
+5. Intreruperea USB
+------------------
+
+Codul are:
+
+bind_interrupts!(struct Irqs {
+    USBCTRL_IRQ => UsbInterruptHandler<USB>;
+});
+
+USB-ul nu functioneaza doar prin citiri/scrieri simple. Hardware-ul USB genereaza
+intreruperi cand PC-ul cere descriptorii USB, cand trimite date, cand activeaza
+endpoint-uri
+
+Aceasta bucata spune runtime-ului Embassy:
+- cand apare intreruperea USBCTRL_IRQ;
+- foloseste UsbInterruptHandler pentru perifericul USB.
+
+Fara asta, USB-MIDI nu s-ar enumera corect in Windows.
+
+
+6. Type alias-urile
+------------------
+
+Codul defineste:
+
+type UsbDriver = Driver<'static, USB>;
+type LumentraUsb = UsbDevice<'static, UsbDriver>;
+type LcdSpi = Spi<'static, SPI0, SpiBlocking>;
+type TofI2c = I2c<'static, I2C0, I2cBlocking>;
+
+Acestea nu creeaza functionalitate noua. Sunt doar nume mai scurte.
+
+De exemplu, in loc sa scriem mereu tipul lung pentru driverul USB, scriem
+UsbDriver. Face codul mai citibil.
+
+
+7. Functia main
+---------------
+
+Functia principala este:
+
+#[embassy_executor::main]
+async fn main(spawner: Spawner)
+
+Aceasta este functia care porneste firmware-ul. Ea este async pentru ca folosim
+Embassy, un runtime async embedded.
+
+Flow-ul functiei main este:
+
+1. initializeaza perifericele placii;
+2. configureaza butoanele;
+3. configureaza buzzerul;
+4. configureaza USB-MIDI;
+5. configureaza LCD-ul;
+6. configureaza senzorul VL53L0X;
+7. intra intr-o bucla infinita in care asteapta conexiunea MIDI si citeste inputurile.
+
+
+8. Initializarea placii
+----------------------
+
+let p = embassy_rp::init(Default::default());
+
+Aceasta linie initializeaza hardware-ul RP2350 si returneaza o structura p
+care contine toate perifericele placii:
+- p.PIN_10, p.PIN_11 etc.
+- p.USB
+- p.SPI0
+- p.I2C0
+
+In Rust embedded, fiecare pin/periferic este "luat" o singura data. Asta previne
+folosirea aceluiasi pin accidental in doua locuri.
+
+
+9. Butoanele
+------------
+
+Codul creeaza vectorul:
+
+let mut buttons = [
+    Button::new(Input::new(p.PIN_10, Pull::Up), 0, BUTTON_NOTES[0]),
+    Button::new(Input::new(p.PIN_11, Pull::Up), 1, BUTTON_NOTES[1]),
+    Button::new(Input::new(p.PIN_12, Pull::Up), 2, BUTTON_NOTES[2]),
+    Button::new(Input::new(p.PIN_13, Pull::Up), 3, BUTTON_NOTES[3]),
+];
+
+Hardware-ul este legat asa:
+- un picior al butonului la pinul GPIO;
+- celalalt picior la GND.
+
+De aceea folosim Pull::Up:
+- cand butonul NU este apasat, pinul este tras intern la 3.3V, deci citeste HIGH;
+- cand butonul este apasat, pinul este conectat la GND, deci citeste LOW.
+
+In cod, apasat inseamna pin.is_low().
+
+Parametrii Button::new sunt:
+- pinul de intrare;
+- indexul butonului pe ecran, de la 0 la 3;
+- nota MIDI asociata.
+
+
+10. Buzzerul
+------------
+
+let mut buzzer = Output::new(p.PIN_15, Level::Low);
+
+Buzzerul este pe GP15 si este controlat ca iesire digitala.
+Codul il porneste/opreste foarte repede pentru a produce tonuri simple.
+
+Nu se foloseste PWM hardware, ci toggling manual:
+- pin HIGH;
+- asteapta cateva microsecunde;
+- pin LOW;
+- asteapta cateva microsecunde;
+- repeta.
+
+
+11. USB-MIDI
+------------
+
+Codul USB din main:
+
+let driver = Driver::new(p.USB, Irqs);
+let mut builder = usb_builder(driver);
+let mut midi = MidiClass::new(&mut builder, 1, 1, 64);
+let usb = builder.build();
+spawner.spawn(usb_task(usb).unwrap());
+
+Ce se intampla aici:
+
+1. Driver::new creeaza driverul USB pentru perifericul USB al placii.
+2. usb_builder configureaza descriptorii USB: nume, vendor ID, product ID etc.
+3. MidiClass::new creeaza interfata USB-MIDI.
+4. builder.build finalizeaza dispozitivul USB.
+5. spawner.spawn porneste task-ul USB in fundal.
+
+Foarte important:
+USB-ul trebuie sa ruleze permanent in fundal, altfel PC-ul nu poate comunica
+cu placa. De aceea exista usb_task.
+
+
+12. Configurarea USB in usb_builder
+-----------------------------------
+
+Functia:
+
+fn usb_builder(driver: UsbDriver) -> Builder<'static, UsbDriver>
+
+creeaza configuratia USB.
+
+Setari importante:
+
+UsbConfig::new(0x1209, 0x4D44)
+- 0x1209 este vendor ID folosit pentru proiecte open-source/prototipuri.
+- 0x4D44 este product ID ales pentru acest proiect.
+
+config.manufacturer = Some("Sandu Tudor Nicolas")
+- numele producatorului afisat de sistem.
+
+config.product = Some("Lumentra USB MIDI")
+- numele device-ului care apare in Windows/FL Studio.
+
+config.device_class = USB_AUDIO_CLASS
+- MIDI prin USB face parte din clasa USB Audio.
+
+config.composite_with_iads = false
+- important pentru ca device-ul este configurat ca device MIDI simplu, nu
+  compozit cu IAD. Daca este gresit, firmware-ul poate face panic si USB-ul nu
+  apare in Windows.
+
+StaticCell pentru buffere:
+- CONFIG_DESCRIPTOR
+- BOS_DESCRIPTOR
+- CONTROL_BUF
+
+Acestea sunt zone de memorie statica folosite de stack-ul USB.
+
+
+13. Task-ul USB
+---------------
+
+#[embassy_executor::task]
+async fn usb_task(mut usb: LumentraUsb) -> ! {
+    usb.run().await
+}
+
+Aceasta functie ruleaza USB-ul pentru totdeauna.
+
+Semnul -> ! inseamna ca functia nu se intoarce niciodata. Este o bucla interna
+controlata de embassy_usb.
+
+Fara usb.run().await:
+- device-ul nu s-ar enumera;
+- Windows nu l-ar vedea;
+- FL Studio nu ar afisa "Lumentra USB MIDI".
+
+
+14. LCD-ul ST7735
+-----------------
+
+In main, ecranul este configurat asa:
+
+let mut cfg = SpiConfig::default();
+cfg.frequency = 16_000_000;
+cfg.phase = spi::Phase::CaptureOnSecondTransition;
+cfg.polarity = spi::Polarity::IdleHigh;
+
+let spi = Spi::new_blocking_txonly(p.SPI0, p.PIN_18, p.PIN_19, cfg);
+let dc = Output::new(p.PIN_16, Level::Low);
+let rst = Output::new(p.PIN_20, Level::High);
+Display::new(spi, dc, rst)
+
+Conexiuni:
+- SCL / SPI clock: GP18
+- SDA / MOSI: GP19
+- DC: GP16
+- RES: GP20
+- CS: GND
+- BLK: 3.3V
+
+Se foloseste SPI transmit-only pentru ca ecranul primeste date, dar nu este citit.
+
+
+15. Initializarea display-ului
+------------------------------
+
+Functia Display::init face:
+
+1. reset hardware:
+   - rst LOW;
+   - asteapta;
+   - rst HIGH;
+   - asteapta.
+
+2. comenzi ST7735:
+   - 0x01: software reset;
+   - 0x11: sleep out;
+   - 0x3A cu 0x05: format culoare RGB565, 16 biti/pixel;
+   - 0x36 cu 0xA8: orientare/rotatie/memory access control;
+   - 0x29: display on.
+
+3. clear(0x0000):
+   - umple ecranul cu negru.
+
+RGB565 inseamna:
+- 5 biti rosu;
+- 6 biti verde;
+- 5 biti albastru.
+
+Exemple de culori folosite:
+- 0x0000: negru
+- 0xFFFF: alb
+- 0x07E0: verde
+- 0xF800: rosu
+- 0x001F: albastru
+- 0xFFE0: galben
+
+
+16. De ce clear sterge 132x132 si apoi 128x128
+----------------------------------------------
+
+Functia clear:
+
+fn clear(&mut self, color: u16) {
+    self.raw_set_window(0, 0, 131, 131);
+    self.fill_pixels(132 * 132, color);
+
+    self.set_window(0, 0, 127, 127);
+    self.fill_pixels(128 * 128, color);
+}
+
+Desi display-ul este 128x128, controllerul ST7735 are uneori memorie interna
+mai mare decat zona vizibila. Din aceasta cauza pot aparea pixeli random
+("pureci") pe margini.
+
+Solutia folosita:
+- intai se curata o zona bruta mai mare, 132x132, fara offset;
+- apoi se curata zona vizibila 128x128 cu offset-urile calibrate.
+
+Aceasta abordare a eliminat purecii de pe ecran.
+
+
+17. Desenarea dashboard-ului
+----------------------------
+
+Functia:
+
+fn draw_dashboard(&mut self, buttons: &[bool; 4], cc: u8)
+
+deseneaza intreaga interfata:
+
+1. sterge ecranul cu negru;
+2. deseneaza rama;
+3. deseneaza cele 4 butoane;
+4. deseneaza sliderul ToF.
+
+Aceasta functie este folosita la startup si cand se reconecteaza USB-ul.
+
+
+18. Desenarea sliderului ToF
+----------------------------
+
+Functia:
+
+fn draw_cc(&mut self, cc: u8)
+
+primeste o valoare intre 0 si 127.
+
+Pasii:
+
+1. calculeaza lungimea partii verzi:
+
+let fill = ((cc as u16 * 96) / 127) as u8;
+
+Valoarea maxima este 96 pixeli.
+
+2. calculeaza pozitia de inceput:
+
+let fill_x = 16 + (96 - fill);
+
+Aceasta formula tine cont de orientarea fizica a ecranului. Intern poate parea
+inversata, dar pe ecranul montat sliderul se umple corect de la stanga la dreapta.
+
+3. sterge zona sliderului:
+
+self.rect(0, 88, 120, 28, 0x0000);
+
+4. deseneaza fundalul sliderului:
+
+self.rect(14, 94, 100, 18, 0x18E3);
+
+5. deseneaza partea verde:
+
+self.rect(fill_x, 97, fill, 12, 0x07E0);
+
+
+19. Desenarea butoanelor
+------------------------
+
+Functia:
+
+fn draw_button(&mut self, index: u8, pressed: bool)
+
+deseneaza un singur buton pe LCD.
+
+Are un array de culori:
+
+const COLORS: [u16; 4] = [0xF800, 0x07E0, 0x001F, 0xFFE0];
+
+Adica:
+- buton 1: rosu
+- buton 2: verde
+- buton 3: albastru
+- buton 4: galben
+
+Pozitia butonului:
+
+let x = 18 + index * 26;
+
+Deci fiecare buton este mutat pe axa X in functie de index.
+
+Daca este apasat:
+- se deseneaza plin cu culoarea lui.
+
+Daca nu este apasat:
+- se deseneaza gri deschis;
+- interiorul se face gri mai inchis.
+
+
+20. Functia rect
+----------------
+
+fn rect(&mut self, x: u8, y: u8, w: u8, h: u8, color: u16)
+
+Aceasta functie deseneaza un dreptunghi plin.
+
+Parametri:
+- x: coordonata stanga;
+- y: coordonata sus;
+- w: latime;
+- h: inaltime;
+- color: culoare RGB565.
+
+Flow:
+1. verifica daca latimea/inaltimea sunt zero;
+2. verifica daca dreptunghiul incepe in afara ecranului;
+3. limiteaza x1/y1 la maximum 127;
+4. seteaza fereastra ST7735 cu set_window;
+5. scrie pixeli de culoarea ceruta cu fill_pixels.
+
+
+21. set_window si raw_set_window
+--------------------------------
+
+set_window:
+- foloseste offset-urile LCD_COL_OFFSET si LCD_ROW_OFFSET;
+- este folosita pentru desenarea normala in zona vizibila.
+
+raw_set_window:
+- nu foloseste offset;
+- este folosita pentru curatarea bruta a memoriei controllerului.
+
+Comenzile ST7735:
+- 0x2A: column address set;
+- 0x2B: row address set;
+- 0x2C: memory write.
+
+Practic:
+1. ii spui ecranului in ce dreptunghi vrei sa desenezi;
+2. trimiti pixelii pentru acea zona.
+
+
+22. fill_pixels
+---------------
+
+fn fill_pixels(&mut self, pixels: u16, color: u16)
+
+Aceasta functie trimite catre LCD un numar de pixeli de aceeasi culoare.
+
+Pentru eficienta, nu trimite cate 2 bytes pentru fiecare pixel individual.
+Face un buffer de 64 bytes:
+- fiecare pixel are 2 bytes;
+- bufferul contine 32 pixeli;
+- trimite bufferul de mai multe ori.
+
+La final, daca mai raman cativa bytes, trimite doar restul.
+
+
+23. Senzorul VL53L0X
+--------------------
+
+Codul pentru senzor:
+
+let mut xshut = Output::new(p.PIN_6, Level::Low);
+xshut.set_low();
+Timer::after(Duration::from_millis(10)).await;
+xshut.set_high();
+Timer::after(Duration::from_millis(50)).await;
+
+XSHUT este pinul de shutdown/reset al senzorului.
+Codul il tine putin oprit, apoi il porneste.
+
+I2C:
+
+let mut i2c_cfg = I2cConfig::default();
+i2c_cfg.frequency = 400_000;
+let mut i2c = I2c::new_blocking(p.I2C0, p.PIN_5, p.PIN_4, i2c_cfg);
+
+Conexiuni:
+- SCL: GP5
+- SDA: GP4
+
+Atentie: in apelul I2c::new_blocking, ordinea este periferic, SCL, SDA, config.
+
+
+24. Verificarea senzorului
+--------------------------
+
+fn i2c_device_present(i2c: &mut TofI2c, address: u8) -> bool
+
+Aceasta functie incearca sa citeasca registrul 0xC0 de la adresa I2C 0x29.
+VL53L0X foloseste adresa implicita 0x29.
+
+Daca citirea merge:
+- senzorul exista;
+- codul creeaza driverul VL53L0x.
+
+Daca citirea nu merge:
+- tof ramane None;
+- restul firmware-ului continua sa functioneze fara senzor.
+
+Aceasta este o protectie importanta: daca senzorul nu e conectat sau are fire
+gresite, USB-MIDI si butoanele tot functioneaza.
+
+
+25. Bucla principala
+--------------------
+
+In main exista:
+
+loop {
+    midi.wait_connection().await;
+    startup_beep(&mut buzzer).await;
+    display.draw_dashboard(&button_states, last_cc);
+
+    while poll_controls(...).await.is_ok() {}
+
+    all_notes_off(&mut midi).await.ok();
+}
+
+Flow:
+
+1. asteapta pana cand PC-ul activeaza interfata MIDI;
+2. face beep de pornire/conectare;
+3. redeseneaza dashboard-ul;
+4. intra in poll_controls si citeste continuu:
+   - butoane;
+   - senzor;
+   - LCD;
+   - MIDI.
+5. daca USB-ul se deconecteaza, trimite note off si se intoarce la pasul 1.
+
+
+26. poll_controls
+-----------------
+
+Aceasta este functia care ruleaza cel mai des in timpul utilizarii.
+
+Ea primeste:
+- midi: interfata USB-MIDI;
+- buttons: cele 4 butoane;
+- tof: senzorul optional;
+- buzzer;
+- display;
+- last_cc: ultima valoare CC trimisa;
+- last_display_cc: ultima valoare CC afisata;
+- button_states: starea butoanelor pentru UI.
+
+Flow pentru butoane:
+
+for button in buttons {
+    if let Some(event) = button.poll() {
+        match event {
+            Pressed => ...
+            Released => ...
+        }
+    }
+}
+
+button.poll() intoarce Some(...) doar cand starea s-a schimbat.
+Deci nu trimite Note On la infinit cat timp tii butonul apasat.
+
+La apasare:
+1. salveaza starea butonului ca true;
+2. actualizeaza LCD-ul pentru acel buton;
+3. face click beep;
+4. trimite MIDI Note On.
+
+La eliberare:
+1. salveaza starea ca false;
+2. actualizeaza LCD-ul;
+3. trimite MIDI Note Off.
+
+Flow pentru senzor:
+1. daca exista senzor;
+2. citeste distanta in milimetri;
+3. converteste distanta in valoare MIDI 0..127;
+4. daca valoarea s-a schimbat suficient, trimite MIDI CC.
+
+La final:
+- daca valoarea CC s-a schimbat fata de ce este pe display, redeseneaza sliderul;
+- asteapta 6 ms.
+
+
+27. De ce exista pragul abs_diff >= 2
+-------------------------------------
+
+In poll_controls:
+
+if cc.abs_diff(*last_cc) >= 2
+
+Senzorul ToF poate avea mici fluctuatii. Daca am trimite MIDI CC pentru fiecare
+diferenta de 1, FL Studio ar primi foarte multe mesaje inutile si sliderul ar
+tremura.
+
+Pragul de 2 inseamna:
+- trimitem doar cand schimbarea e suficient de vizibila;
+- controlul devine mai stabil.
+
+
+28. Mesajele MIDI
+-----------------
+
+USB-MIDI trimite pachete de 4 bytes.
+
+Note On:
+
+[0x09, 0x90 | MIDI_CHANNEL, note, velocity]
+
+0x09:
+- USB-MIDI Code Index Number pentru Note On.
+
+0x90:
+- mesaj MIDI Note On pe canalul ales.
+
+note:
+- numarul notei MIDI.
+
+velocity:
+- intensitatea notei.
+
+
+Note Off:
+
+[0x08, 0x80 | MIDI_CHANNEL, note, 0]
+
+0x08:
+- USB-MIDI Code Index Number pentru Note Off.
+
+0x80:
+- mesaj MIDI Note Off.
+
+
+Control Change:
+
+[0x0B, 0xB0 | MIDI_CHANNEL, cc, value]
+
+0x0B:
+- USB-MIDI Code Index Number pentru Control Change.
+
+0xB0:
+- mesaj MIDI Control Change.
+
+cc:
+- numarul controllerului, aici 74.
+
+value:
+- valoarea intre 0 si 127.
+
+
+29. all_notes_off
+-----------------
+
+async fn all_notes_off(...)
+
+Trimite Note Off pentru toate notele butoanelor.
+
+Este util cand:
+- USB-ul se deconecteaza;
+- FL Studio se inchide;
+- device-ul pierde conexiunea.
+
+Fara asta, uneori un DAW poate ramane cu o nota "agatata".
+
+
+30. distance_to_cc
+------------------
+
+fn distance_to_cc(mm: u16) -> u8
+
+Aceasta functie transforma distanta masurata de VL53L0X in valoare MIDI.
+
+Pasii:
+
+1. limiteaza distanta:
+
+let clamped = mm.clamp(DISTANCE_MIN_MM, DISTANCE_MAX_MM);
+
+Daca senzorul citeste sub 40 mm, folosim 40.
+Daca citeste peste 450 mm, folosim 450.
+
+2. calculeaza pozitia in interval:
+
+let shifted = clamped - DISTANCE_MIN_MM;
+
+3. transforma in 0..127:
+
+(shifted as u32 * 127 / span as u32)
+
+4. inverseaza:
+
+127 - valoare
+
+De ce inverseaza?
+Ca mana mai aproape de senzor sa insemne valoare mai mare.
+
+
+31. Buzzer: startup_beep, click_beep, tone
+------------------------------------------
+
+startup_beep:
+- reda doua tonuri scurte;
+- indica faptul ca device-ul este conectat/activ.
+
+click_beep:
+- reda un ton foarte scurt la apasarea unui buton.
+
+tone:
+- genereaza efectiv sunetul.
+
+Formula:
+
+let half_period_us = 500_000 / frequency_hz;
+
+Pentru o frecventa, perioada completa este 1/f.
+Ca sa facem un semnal patrat:
+- jumatate din perioada pin HIGH;
+- jumatate pin LOW.
+
+Codul repeta asta de mai multe ori pentru durata ceruta.
+
+
+32. Structura Button
+--------------------
+
+struct Button {
+    pin: Input<'static>,
+    index: u8,
+    note: u8,
+    previous: bool,
+}
+
+Campuri:
+- pin: pinul fizic citit;
+- index: pozitia pe LCD;
+- note: nota MIDI trimisa;
+- previous: starea anterioara.
+
+previous este important pentru detectarea schimbarii.
+
+
+33. Button::poll
+----------------
+
+fn poll(&mut self) -> Option<ButtonEvent>
+
+Citeste starea curenta:
+
+let now = self.pin.is_low();
+
+Pentru ca butoanele sunt la GND cu Pull::Up:
+- LOW inseamna apasat;
+- HIGH inseamna liber.
+
+Daca starea nu s-a schimbat:
+- returneaza None.
+
+Daca s-a schimbat:
+- actualizeaza previous;
+- returneaza Pressed sau Released.
+
+
+34. ButtonEvent
+---------------
+
+enum ButtonEvent {
+    Pressed { index: u8, note: u8 },
+    Released { index: u8, note: u8 },
+}
+
+Acest enum descrie evenimentul unui buton:
+- Pressed: tocmai a fost apasat;
+- Released: tocmai a fost eliberat.
+
+Include indexul pentru LCD si nota pentru MIDI.
+
+
+35. Structura Display
+---------------------
+
+struct Display {
+    spi: LcdSpi,
+    dc: Output<'static>,
+    rst: Output<'static>,
+}
+
+Campuri:
+- spi: magistrala SPI folosita pentru pixeli/comenzi;
+- dc: Data/Command, spune ecranului daca trimitem comanda sau date;
+- rst: reset hardware.
+
+CS-ul ecranului este conectat la GND, deci nu apare in cod.
+
+
+36. Disconnected
+----------------
+
+struct Disconnected;
+
+Este un tip simplu folosit ca eroare cand endpoint-ul USB este dezactivat.
+
+Conversia:
+
+impl From<embassy_usb::driver::EndpointError> for Disconnected
+
+Daca USB da EndpointError::Disabled:
+- inseamna ca host-ul a deconectat/disabled endpoint-ul;
+- functiile MIDI ies cu eroare;
+- bucla principala se intoarce si asteapta reconectare.
+
+Daca apare BufferOverflow:
+- codul intra intr-o bucla cu bkpt.
+- asta este tratat ca eroare grava de programare.
+
+
+37. Flow complet de la pornire
+------------------------------
+
+1. Pico 2 W primeste alimentare prin USB.
+2. Runtime-ul porneste functia main.
+3. Se initializeaza perifericele RP2350.
+4. Se configureaza butoanele pe GP10-GP13 cu Pull::Up.
+5. Se configureaza buzzerul pe GP15.
+6. Se configureaza USB-MIDI si se porneste usb_task.
+7. Se configureaza SPI si LCD-ul ST7735.
+8. LCD-ul este curatat si deseneaza dashboard-ul.
+9. Senzorul VL53L0X este resetat prin XSHUT.
+10. Se configureaza I2C pe GP4/GP5.
+11. Se verifica daca senzorul raspunde la adresa 0x29.
+12. Firmware-ul asteapta ca PC-ul sa activeze interfata MIDI.
+13. Cand FL Studio/Windows activeaza device-ul, se aude beep.
+14. In bucla principala:
+    - butoanele trimit Note On/Off;
+    - senzorul trimite CC 74;
+    - LCD-ul arata starea;
+    - buzzerul confirma apasarile.
+
+
+38. Flow cand apesi un buton
+----------------------------
+
+1. Apesi butonul fizic.
+2. Pinul GPIO este conectat la GND.
+3. pin.is_low() devine true.
+4. Button::poll detecteaza schimbarea fata de previous.
+5. Returneaza ButtonEvent::Pressed.
+6. poll_controls:
+   - seteaza button_states[index] = true;
+   - coloreaza butonul pe LCD;
+   - face bip;
+   - trimite MIDI Note On.
+7. FL Studio primeste nota si declanseaza sunetul mapat.
+
+Cand eliberezi:
+1. pinul revine HIGH datorita Pull::Up;
+2. Button::poll returneaza Released;
+3. codul redeseneaza butonul ca neapasat;
+4. trimite MIDI Note Off.
+
+
+39. Flow cand misti mana la senzor
+----------------------------------
+
+1. VL53L0X masoara distanta pana la mana.
+2. Codul citeste distanta in milimetri.
+3. distance_to_cc o transforma in 0..127.
+4. Daca valoarea s-a schimbat cu cel putin 2:
+   - trimite MIDI CC 74;
+   - actualizeaza sliderul verde pe LCD.
+5. In FL Studio, daca ai facut Link to controller, knob-ul mapat se misca.
+
+
+40. Ce trebuie retinut pentru prezentare
+----------------------------------------
+
+Ideea proiectului:
+- un controller MIDI plug-and-play facut in Rust pe Raspberry Pi Pico 2 W.
+
+Partea embedded:
+- foloseste GPIO pentru butoane si buzzer;
+- foloseste I2C pentru senzorul VL53L0X;
+- foloseste SPI pentru display-ul ST7735;
+- foloseste USB nativ pentru MIDI.
+
+Partea software:
+- firmware no_std;
+- runtime async Embassy;
+- USB-MIDI class device;
+- citire inputuri si update UI in timp real.
+
+Partea practica:
+- in FL Studio, butoanele declanseaza sunete;
+- senzorul controleaza un efect sau un parametru;
+- LCD-ul ofera feedback vizual;
+- buzzerul ofera feedback local.
