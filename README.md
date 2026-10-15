@@ -5,10 +5,31 @@
 Lumentra uses the RP2350's native USB interface to send MIDI to a DAW such as FL Studio. A VL53L0X distance sensor turns hand movement into MIDI CC messages, while an ST7735 display and buzzer provide local feedback.
 
 <p align="center">
-  <img src="docs/media/lumentra-controller.jpg" alt="Lumentra hardware with four green buttons in a red enclosure, a Pico board, display, and breadboard wiring" width="600">
+  <img src="docs/media/finished-enclosure.jpg" alt="Finished red Lumentra controller enclosure with four green buttons, distance sensor, and active display" width="460">
 </p>
 
-*Physical prototype with its four-button enclosure and connected electronics.*
+*Four note buttons, touchless expression, and a live display in the printed enclosure.*
+
+## See it in action
+
+[![Animated preview of Lumentra controlling FL Studio](docs/media/lumentra-preview.gif)](docs/media/lumentra-fl-studio-demo.mp4)
+
+**[Watch the full FL Studio demonstration with audio (24 seconds)](docs/media/lumentra-fl-studio-demo.mp4)**
+
+The clip shows the physical controller being used alongside FL Studio. The animated preview is silent; open the full MP4 for audio. If GitHub offers a download instead of playback, download the video and open it locally.
+
+## Hardware gallery
+
+| Controller and wiring | Display detail |
+| --- | --- |
+| ![Lumentra button enclosure and connected hardware](docs/media/assembled-controller.jpg) | ![Lumentra display with a horizontal green indicator and four blue bars](docs/media/display-detail.jpg) |
+
+<details>
+<summary>Earlier prototype and electronics</summary>
+
+<img src="docs/media/lumentra-controller.jpg" alt="Earlier Lumentra prototype with four buttons, Pico board, display, and breadboard wiring" width="600">
+
+</details>
 
 ## Architecture
 
